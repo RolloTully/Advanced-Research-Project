@@ -4,7 +4,8 @@ from scipy import interpolate
 import copy
 from tqdm import tqdm
 import numba as nb
-
+from matplotlib import cm
+plt.rcParams["font.family"] = "Times New Roman"
 
 '''
 Questions to be answered.
@@ -18,9 +19,10 @@ What is the program, How does it work...
 
 '''
 class Trajectory(object):
-    def __init__(self, surface, wire_trajectory):
+    def __init__(self, surface, wire_trajectory, wire_velocity = []):
         self.surface_panels = surface
         self.wire_trajectory_panels = wire_trajectory
+        self.wire_velocity = wire_velocity
         self.critical_surface_energy = 1 #<<<<<<-----------This needs to be calibrated from experiemental analysis.
         self.free_surface_critical_energy = 1
         self.close_surface_critical_energy = 1
@@ -32,38 +34,79 @@ class Trajectory(object):
         '''returns the predicted surface shape from the given trajectory'''
         pass
 
-    def predict_sde(self):
+    def predict_sde(self, verbose = False):
         '''predict based on the energy deposited over the foil surface'''
         '''returns the surface energy on the given foil surface'''
         '''assumes that all surface panels will recive the same energy'''
         [panel.update() for panel in self.surface_panels]
+        [panel.update() for panel in self.wire_trajectory_panels]
         self.mid_points = np.array([panel.mid_point for panel in self.surface_panels])
         self.surface_irradance = np.zeros_like(self.surface_panels) #Keeps track of how much energy a panel has been exposed to.
         '''
         to accelerate this calculation we can calculate what regions of the trajectory are visable from each each panel, this means we dont have to compute all point for every panel
         this step is hugely computationally expensive.
         '''
-        self.visibility_matrix = np.full((self.surface_panels.shape[0], self.wire_trajectory_panels.shape[0]),0)#what panels are visable from which points, approximate
-        self.perspective_matix = np.empty((self.surface_panels.shape[0], self.wire_trajectory_panels.shape[0]))#what is the distrance and angle of a panel from a point
-        '''Filling the visibility matrix, what panels are visable from where'''
-        for w_n, wire_panel in enumerate(tqdm(self.wire_trajectory_panels)):
-            wire_panel.update()
-            '''compute the vector between the current wire panel midpoint and all surface panels'''
-            for s_n, surface_panel in enumerate(self.surface_panels):
-                '''is the wire above the surface, this isnt perfect but because the surface has few high frequency features it works just fine '''
-                self.visibility_matrix[s_n, w_n] = (0 >= np.cross(surface_panel.panel_vector, wire_panel.mid_point-surface_panel.mid_point))# this will tell us is its definatly not visable
-                self.perspective_matix[s_n, w_n] = ((1-np.abs(np.dot(wire_panel.panel_normal_vector,surface_panel.panel_vector)))*surface_panel.area)/np.sqrt(np.sum(np.square(wire_panel.mid_point-surface_panel.mid_point)))
-        plt.imshow(self.visibility_matrix, interpolation='nearest')
-        plt.gca().invert_yaxis()
-        plt.show()
-        #plt.imshow(self.perspective_matix, interpolation='nearest')
-        plt.imshow(self.visibility_matrix*self.perspective_matix*np.tri(*self.visibility_matrix.shape,k=6), cmap='gray')
-        plt.gca().invert_yaxis()
-        plt.ylabel("Surface panel index")
-        plt.xlabel("Wire panel index")
-        plt.show()
-        plt.plot(np.sum(self.visibility_matrix*self.perspective_matix, axis = 1))
-        plt.show()
+        self.wire_midpoints = np.array([panel.mid_point for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
+        self.wire_vectors = np.array([panel.panel_vector for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
+        self.surface_midpoints = np.array([panel.mid_point for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
+        self.surface_vectors = np.array([panel.panel_vector for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
+        self.surface_areas = np.array([panel.area for panel in self.surface_panels])  # Shape: (num_surfaces,)
+        self.wire_areas = np.array([panel.area for panel in self.wire_trajectory_panels])
+        # Compute differences and distances between all wire and surface panels
+        self.diff = self.wire_midpoints[:, np.newaxis, :] - self.surface_midpoints[np.newaxis, :, :]  # Shape: (num_wires, num_surfaces, 2)
+        self.distances = np.linalg.norm(self.diff, axis=2)  # Shape: (num_wires, num_surfaces)
+        # Compute visibility matrix using broadcasting
+        # Cross product in 2D: z-component of (a x b) = a[0]*b[1] - a[1]*b[0]
+        self.cross_products = (
+        self.surface_vectors[np.newaxis, :, 0] * self.diff[:, :, 1] -
+        self.surface_vectors[np.newaxis, :, 1] * self.diff[:, :, 0]
+        )  # Shape: (num_wires, num_surfaces)
+        self.visibility_matrix = (0 >= self.cross_products.T)  # Transpose for desired shape
+        # Compute perspective matrix using broadcasting
+        self.dot_products = np.abs(
+        self.surface_vectors[np.newaxis, :, 0] * self.wire_vectors[:, 0][:, np.newaxis] +
+        self.surface_vectors[np.newaxis, :, 1] * self.wire_vectors[:, 1][:, np.newaxis]
+        )  # Shape: (num_wires, num_surfaces)
+        self.perspective_matrix = (self.dot_products.T * self.wire_areas * self.surface_areas * np.tri(*self.visibility_matrix.shape,k=1)) / (self.distances.T**2)  # Transpose for shape alignment
+        # Calculate surface exposure
+        self.surface_exposure = np.sum(self.visibility_matrix * self.perspective_matrix, axis=1)#
+        if verbose:
+            plt.imshow(self.visibility_matrix, interpolation='spline16', cmap = "binary")
+            plt.colorbar()
+            plt.grid()
+            plt.ylabel("Surface panel index")
+            plt.xlabel("Wire panel index")
+            plt.title("Wire Surface Visibility")
+            plt.gca().invert_yaxis()
+            plt.show()
+            #plt.imshow(self.visibility_matrix)
+            #plt.imshow(self.distances)
+            plt.imshow(self.perspective_matrix*self.visibility_matrix, interpolation='nearest')
+            #plt.imshow(self.visibility_matrix*self.perspective_matrix*np.tri(*self.visibility_matrix.shape,k=1),interpolation='nearest', cmap='jet')
+            plt.gca().invert_yaxis()
+            plt.ylabel("Surface panel index")
+            plt.xlabel("Wire panel index")
+            plt.colorbar()
+            plt.show()
+            plt.plot(self.surface_exposure, c = 'black')
+            plt.xlabel("Surface panel index")
+            plt.ylabel("Dimensionless heating parameter")
+            plt.grid()
+            plt.show()
+            self.fig,self.axs = plt.subplots()
+            for n, panel in enumerate(self.surface_panels):
+                self.axs.plot(panel.points[:,0],panel.points[:,1],c=cm.jet(self.surface_exposure[n]/np.max(self.surface_exposure)))
+            plt.gca().set_aspect('equal')
+            plt.xlabel("X position [mm]")
+            plt.ylabel("Y position [mm]")
+            plt.grid()
+            plt.show()
+            self.fig, self.ax = plt.subplots(subplot_kw=dict(projection='3d'))
+            print(self.surface_exposure)
+            self.ax.stem(self.surface_midpoints[:,0],self.surface_midpoints[:,1], self.surface_exposure)
+            self.ax.set_proj_type('persp')
+            plt.show()
+        return self.surface_exposure
 
 
 
@@ -71,7 +114,7 @@ class Panel(object):
     def __init__(self, p1,p2):
         self.points = np.vstack((p1,p2))
         self.panel_vector = np.diff(self.points,axis=0)[0]
-        self.panel_normal_vector = self.perpendicular(self.panel_vector)
+        self.panel_normal_vector = self.perpendicular(self.panel_vector).astype(np.float32)
         self.area = np.hypot(self.panel_vector[0],self.panel_vector[1])
         self.mid_point = np.mean(self.points,axis=0)
         self.direction = np.sign(np.diff(self.points[:,0],axis = 0)[0]) #Is the direction of travel of curve
@@ -107,11 +150,6 @@ class Panel(object):
             return True
         else:
             return False
-
-
-    def perspective(self, m, c):
-        '''Returns the distance and angle of this panel relative to a point'''
-        pass
     def update(self):
         self.mid_point = np.mean(self.points,axis=0)
         self.direction = np.sign(np.diff(self.points[:,0],axis = 0)[0]) #Is the direction of travel of curve
@@ -181,7 +219,7 @@ class Shape(object):
 class main(object):
     def __init__(self):
         '''Loading in foil data'''
-        self.foil_addr = "Airfoils//s1223.dat"
+        self.foil_addr = "Airfoils//S1223.dat"
         self.raw = open(self.foil_addr,'r').read()
         self.foil_dat = np.array(self.format_dat(self.raw))[2:-2]
         self.mainloop()
@@ -197,12 +235,10 @@ class main(object):
         for  n in range(0, points.shape[0]-1):
             '''We need to calculate the surface vector at the point, this is the rotational average of the 2 neighboring panels'''
 
-    def cost(self):
-        pass
-
-    def loss(self):
+    def MSE_Loss(self, array, target):
         '''Define loss function'''
         '''Distance between desired shape and predicted shape'''
+        return (1/len(array))*np.sum((array-target)**2)
         pass
 
     def format_dat(self,data):
@@ -214,16 +250,6 @@ class main(object):
         self.formatted = list(filter(lambda x:x!=[],self.formatted))
         return self.formatted
 
-
-    def Compute_cutting_path(self):
-        '''
-        we start by producing the dumb path, a simple kerf offset
-        '''
-        self.foil_dat  = np.append(self.foil_dat, [self.foil_dat[0]], axis = 0)#we close the path
-        self.path_derivative = np.diff(self.foil_dat,axis=0)
-        self.surface_tangent_angle = np.atan2(self.path_derivative[:,0],self.path_derivative[:,1])
-        print(self.path_derivative)
-        print(self.surface_tangent_angle)
 
     def panel_intersections(self, panels):
         self.points = []
@@ -253,47 +279,54 @@ class main(object):
         '''These points are turned in to panels'''
         self.Panels = self.Discretize(self.Tip_points)
         '''The cutting path now needs to be initialised, this is done by offsetting the the surface points and then defining a new B-Spline'''
-        self.offset_guess = 5
-        self.offset_panels = np.array([panel.offset(self.offset_guess) for panel in self.Panels])#offsets the panel
+        self.x = np.linspace(0,2*np.pi,len(self.Panels))
+        self.offset_guess = 0.01*(np.sin (2 * self.x) + np.sin(np.pi * self.x)) +3
+        plt.plot(self.offset_guess)
+        plt.show()
+        self.offset_panels = np.array([panel.offset(self.offset_guess[n]) for n, panel in enumerate(self.Panels)])#offsets the panel
         '''We now calculate the new intersections between the panels'''
         self.trajectory_Panels = self.panel_intersections(self.offset_panels) #calculates the new meeting points between panels and redefines the panels, this is the trajectory path
         self.trajectory = Trajectory(self.Panels, self.trajectory_Panels)
-        self.trajectory.predict_sde()
+        self.surface_exposure = self.trajectory.predict_sde()
+        self.Loss = self.MSE_Loss(self.surface_exposure, self.trajectory.critical_surface_energy)
+
+        print("MSE Loss", self.Loss)
+        '''We now need to do auto differentiation, fml'''
+
+
+
+
 
 
         self.points = np.r_[np.array([panel.points[0] for panel in self.trajectory_Panels]),[self.trajectory_Panels[-1].points[1]]]#makes a close loop path of points for display
         self.tck, _ = interpolate.splprep([self.points[:,0],self.points[:,1]],k=5,s=0.1,per=True)
         self.Samples = np.linspace(0,1,1000, endpoint = False)
         self.x, self.y = interpolate.splev(self.Samples,self.tck)
-
-
-
-
         self.x_k, self.y_k = self.shape.Tip_knots()
         self.fig, self.axs = plt.subplots()
-        self.axs.plot(self.x,self.y,c = "Blue", label = "B-Spline")#, self.rail[1])
+        self.axs.scatter(self.x,self.y,c = "Blue", label = "B-Spline")#, self.rail[1])
         self.axs.scatter(self.shape.tip_discrete_directrices[:,0],self.shape.tip_discrete_directrices[:,1],c = "red",label = "Orginal points")
-        self.axs.scatter(self.x_k,self.y_k,c = "orange",label = "spline knots")
+        #self.axs.scatter(self.x_k,self.y_k,c = "orange",label = "spline knots")
 
         self.axs.set_title("B-Spline interpolation of foil")
 
-
+        plt.show()
         self.fig,self.axs = plt.subplots()
 
         '''Original shape'''
         for panel in self.Panels:
-            #self.axs.scatter(panel.points[:,0],panel.points[:,1],c="red")
+            self.axs.scatter(panel.points[:,0],panel.points[:,1],c="red")
             self.axs.plot(panel.points[:,0],panel.points[:,1],c="blue")
         '''offset spline plotting'''
         self.axs.plot(self.x,self.y)
         '''Plotting offset'''
         for panel in self.trajectory_Panels:
-            #self.axs.scatter(panel.points[:,0],panel.points[:,1],c="red")
+            self.axs.scatter(panel.points[:,0],panel.points[:,1],c="red")
             self.axs.plot(panel.points[:,0],panel.points[:,1],c="green")
         plt.gca().set_aspect('equal')
         plt.legend()
         plt.show()
-        '''
+        self.fig,self.axs = plt.subplots()
         for panel in self.offset_panels:
             print(panel)
             self.x = np.linspace(panel.points[0,0],panel.points[1,0],5)
@@ -301,14 +334,8 @@ class main(object):
             print(panel.m, panel.c)
             self.y = panel.m*self.x+panel.c
             self.axs.plot(self.x,self.y, c= "Green")
-        '''
         plt.gca().set_aspect('equal')
         plt.show()
-
-
-
-        print(self.foil_dat)
-        self.Compute_cutting_path()
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot(111)
         self.ax.plot(self.foil_dat[:,0],self.foil_dat[:,1])
