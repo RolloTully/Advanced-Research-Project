@@ -135,6 +135,9 @@ class Panel(object):
 
     def offset(self,d):
         '''returns a copy that has been offset by d mm'''
+        '''
+        This has some problems with certain foil geometries, needs to be refactored.
+        '''
         self.offset_self = copy.deepcopy(self)
         self.offset_self.c = self.c-self.direction*d*np.sqrt(1+self.m**2)
         return self.offset_self
@@ -172,7 +175,7 @@ class Shape(object):
         self.Compute_goemetry()
         self.Fit_bspline_surface()
     def Discretize(self, points):
-        print(points.shape)
+        #print(points.shape)
         return np.array([Panel(points[0,n], points[0,n+1]) for n in range(0,points.shape[1]-1)]) #Turns the continuious surface into a set of discrete panels, points are distributed evenly along the parametrisation
 
     def Compute_goemetry(self):
@@ -206,7 +209,7 @@ class Shape(object):
         '''
 
     def Tip_knots(self):
-        print(self.t_tck[0])
+        #print(self.t_tck[0])
         return interpolate.splev(self.t_tck[0],self.t_tck)
 
     def Tip_geometry(self):
@@ -223,7 +226,7 @@ class Shape(object):
 class main(object):
     def __init__(self):
         '''Loading in foil data'''
-        self.foil_addr = "Airfoils//s9104.dat.txt"
+        self.foil_addr = "Airfoils//s1223.dat"
         self.raw = open(self.foil_addr,'r').read()
         self.foil_dat = np.array(self.format_dat(self.raw))[2:-2]
         self.mainloop()
@@ -231,7 +234,7 @@ class main(object):
     def Discretize(self, points):
         '''to correctly discretise we have to close the path'''
         points = np.concatenate([points[0],[points[0,0]]],axis=0)#this closes the loop
-        print(points.shape)
+        #print(points.shape)
         return np.array([Panel(points[n], points[n+1]) for n in range(0,points.shape[0]-1)]) #Turns the continuious surface into a set of discrete panels, points are distributed evenly along the parametrisation
 
     def _curve(self, panels, offset_vector):
@@ -277,93 +280,63 @@ class main(object):
     def mainloop(self):
         '''Load in Foil Data'''
         self.shape = Shape(self.foil_dat, self.foil_dat, 300,200,2,0,5) #Instanciated the foil
-        '''Tip Geometry is extracted from the composite B-Spline'''
-        self.x, self.y = self.shape.Tip_geometry()
-        self.Tip_points = np.dstack((self.x,self.y))
-        '''These points are turned in to panels'''
-        self.Panels = self.Discretize(self.Tip_points)
-        '''The cutting path now needs to be initialised, this is done by offsetting the the surface points and then defining a new B-Spline'''
-        self.x = np.linspace(0,np.pi,len(self.Panels))
-        self.offset_guess = 3+3*np.sin (self.x)
-        plt.plot(self.offset_guess)
-        plt.show()
-        self.offset_panels = np.array([panel.offset(self.offset_guess[n]) for n, panel in enumerate(self.Panels)])#offsets the panel
-        '''We now calculate the new intersections between the panels'''
-        self.trajectory_Panels = self.panel_intersections(self.offset_panels) #calculates the new meeting points between panels and redefines the panels, this is the trajectory path
-        self.trajectory = Trajectory(self.Panels, self.trajectory_Panels)
-        self.surface_exposure = self.trajectory.predict_sde()
-        self.Loss = self.MSE_Loss(self.surface_exposure, self.trajectory.critical_surface_energy)
 
-        print("MSE Loss", self.Loss)
-        '''We now need to do auto differentiation, fml'''
-
-        self.fig,self.axs = plt.subplots()
-        for panel in self.Panels:
-            self.axs.plot(panel.points[:,0],panel.points[:,1],c="black",linestyle = (0, (3, 1, 1, 1)))
-
-        #for panel in self.trajectory_Panels:
-        self.curve = []
-        for panel in self.trajectory_Panels:
-            self.curve.append([panel.points[1,0],panel.points[1,1]])
-        self.curve = np.array(self.curve)
-
-        for i in range(200,400,10):
-            self.axs.add_patch(plt.Circle(self.curve[i], self.offset_guess[i], color = 'black',fill = False))
-        #slf.axs.plot(panel.points[:,0],panel.points[:,1],c="black",linestyle = (0, (5, 10)))
-        self.axs.plot(self.curve[:,0],self.curve[:,1],c="black",linestyle = (0, (5, 10)))
-        plt.gca().set_aspect('equal')
-        plt.legend()
-        plt.grid()
-        plt.show()
-
-
-
-
-
-        self.points = np.r_[np.array([panel.points[0] for panel in self.trajectory_Panels]),[self.trajectory_Panels[-1].points[1]]]#makes a close loop path of points for display
-        self.tck, _ = interpolate.splprep([self.points[:,0],self.points[:,1]],k=5,s=0.1,per=True)
-        self.Samples = np.linspace(0,1,1000, endpoint = False)
-        self.x, self.y = interpolate.splev(self.Samples,self.tck)
-        self.x_k, self.y_k = self.shape.Tip_knots()
-        self.fig, self.axs = plt.subplots()
-        self.axs.scatter(self.x,self.y,c = "Blue", label = "B-Spline")#, self.rail[1])
-        self.axs.scatter(self.shape.tip_discrete_directrices[:,0],self.shape.tip_discrete_directrices[:,1],c = "red",label = "Orginal points")
-        #self.axs.scatter(self.x_k,self.y_k,c = "orange",label = "spline knots")
-
-        self.axs.set_title("B-Spline interpolation of foil")
-
-        plt.show()
-        self.fig,self.axs = plt.subplots()
-
-        '''Original shape'''
-        for panel in self.Panels:
-            self.axs.scatter(panel.points[:,0],panel.points[:,1],c="red")
-            self.axs.plot(panel.points[:,0],panel.points[:,1],c="blue")
-        '''offset spline plotting'''
-        self.axs.plot(self.x,self.y)
-        '''Plotting offset'''
-        for panel in self.trajectory_Panels:
-            self.axs.scatter(panel.points[:,0],panel.points[:,1],c="red")
-            self.axs.plot(panel.points[:,0],panel.points[:,1],c="green")
-        plt.gca().set_aspect('equal')
-        plt.legend()
-        plt.show()
-        self.fig,self.axs = plt.subplots()
-        for panel in self.offset_panels:
-            print(panel)
-            self.x = np.linspace(panel.points[0,0],panel.points[1,0],5)
-            print("M, C")
-            print(panel.m, panel.c)
-            self.y = panel.m*self.x+panel.c
-            self.axs.plot(self.x,self.y, c= "Green")
-        plt.gca().set_aspect('equal')
-        plt.show()
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot(111)
         self.ax.plot(self.foil_dat[:,0],self.foil_dat[:,1])
         plt.title("S1223 Foil")
         plt.gca().set_aspect('equal')
         plt.show()
+
+        '''Tip Geometry is extracted from the composite B-Spline'''
+        self.x, self.y = self.shape.Tip_geometry()
+        self.Tip_points = np.dstack((self.x,self.y))
+
+        '''These points are turned in to panels'''
+        self.Panels = self.Discretize(self.Tip_points)
+
+        '''The cutting path now needs to be initialised, this is done by offsetting the the surface points and then defining a new B-Spline'''
+        self.x = np.linspace(0,np.pi,len(self.Panels))
+        self.offset_guess = 3
+        plt.plot(self.offset_guess)
+        plt.show()
+        self.offset_panels = np.array([panel.offset(self.offset_guess) for n, panel in enumerate(self.Panels)])#offsets the panel
+        '''We now calculate the new intersections between the panels'''
+        self.trajectory_Panels = self.panel_intersections(self.offset_panels) #calculates the new meeting points between panels and redefines the panels, this is the trajectory path
+        self.trajectory = Trajectory(self.Panels, self.trajectory_Panels)
+
+        self.fig,self.axs = plt.subplots()
+        self.curve = []
+        for panel in self.Panels:
+            self.axs.plot(panel.points[:,0],panel.points[:,1],c="black",linestyle = (0, (3, 1, 1, 1)))
+        for panel in self.trajectory_Panels:
+            self.curve.append([panel.points[1,0],panel.points[1,1]])
+        self.curve = np.array(self.curve)
+        self.axs.plot(self.curve[:,0],self.curve[:,1],c="black",linestyle = (0, (1, 2)))
+        plt.gca().set_aspect('equal')
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+        '''We now have the hotwires inital trajectory, we now need to calculate how well this trajectory performes'''
+        self.surface_exposure = self.trajectory.predict_sde()
+        self.Loss = self.MSE_Loss(self.surface_exposure, self.trajectory.critical_surface_energy)
+
+        print("MSE Loss", self.Loss)
+        '''We now need to do auto differentiation, fml'''
+
+        '''This is suprisingly important, dont get rid of just yet'''
+        self.fig,self.axs = plt.subplots()
+        for panel in self.offset_panels:
+            #print(panel)
+            self.x = np.linspace(panel.points[0,0],panel.points[1,0],5)
+            #print("M, C")
+            #print(panel.m, panel.c)
+            self.y = panel.m*self.x+panel.c
+            self.axs.plot(self.x,self.y, c= "Green")
+        plt.gca().set_aspect('equal')
+        plt.show()
+
 
 
 if __name__ == "__main__":
