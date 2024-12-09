@@ -71,6 +71,8 @@ class Trajectory(object):
         # Calculate surface exposure
         self.surface_exposure = np.sum(self.visibility_matrix * self.perspective_matrix, axis=1)#
         if verbose:
+
+
             plt.imshow(self.visibility_matrix, interpolation='spline16', cmap = "binary")
             plt.colorbar()
             plt.grid()
@@ -88,6 +90,8 @@ class Trajectory(object):
             plt.xlabel("Wire panel index")
             plt.colorbar()
             plt.show()
+
+
             plt.plot(self.surface_exposure, c = 'black')
             plt.xlabel("Surface panel index")
             plt.ylabel("Dimensionless heating parameter")
@@ -219,7 +223,7 @@ class Shape(object):
 class main(object):
     def __init__(self):
         '''Loading in foil data'''
-        self.foil_addr = "Airfoils//S1223.dat"
+        self.foil_addr = "Airfoils//s9104.dat.txt"
         self.raw = open(self.foil_addr,'r').read()
         self.foil_dat = np.array(self.format_dat(self.raw))[2:-2]
         self.mainloop()
@@ -267,8 +271,8 @@ class main(object):
         self.points.append([self.x_intersection,self.y_intersection])
         return panels
 
-
-
+    def Auto_Differentiation(self):
+        pass
 
     def mainloop(self):
         '''Load in Foil Data'''
@@ -279,8 +283,8 @@ class main(object):
         '''These points are turned in to panels'''
         self.Panels = self.Discretize(self.Tip_points)
         '''The cutting path now needs to be initialised, this is done by offsetting the the surface points and then defining a new B-Spline'''
-        self.x = np.linspace(0,2*np.pi,len(self.Panels))
-        self.offset_guess = 0.01*(np.sin (2 * self.x) + np.sin(np.pi * self.x)) +3
+        self.x = np.linspace(0,np.pi,len(self.Panels))
+        self.offset_guess = 3+3*np.sin (self.x)
         plt.plot(self.offset_guess)
         plt.show()
         self.offset_panels = np.array([panel.offset(self.offset_guess[n]) for n, panel in enumerate(self.Panels)])#offsets the panel
@@ -293,6 +297,24 @@ class main(object):
         print("MSE Loss", self.Loss)
         '''We now need to do auto differentiation, fml'''
 
+        self.fig,self.axs = plt.subplots()
+        for panel in self.Panels:
+            self.axs.plot(panel.points[:,0],panel.points[:,1],c="black",linestyle = (0, (3, 1, 1, 1)))
+
+        #for panel in self.trajectory_Panels:
+        self.curve = []
+        for panel in self.trajectory_Panels:
+            self.curve.append([panel.points[1,0],panel.points[1,1]])
+        self.curve = np.array(self.curve)
+
+        for i in range(200,400,10):
+            self.axs.add_patch(plt.Circle(self.curve[i], self.offset_guess[i], color = 'black',fill = False))
+        #slf.axs.plot(panel.points[:,0],panel.points[:,1],c="black",linestyle = (0, (5, 10)))
+        self.axs.plot(self.curve[:,0],self.curve[:,1],c="black",linestyle = (0, (5, 10)))
+        plt.gca().set_aspect('equal')
+        plt.legend()
+        plt.grid()
+        plt.show()
 
 
 
