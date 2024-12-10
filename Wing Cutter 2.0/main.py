@@ -1,9 +1,10 @@
 import numpy as np
+import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from scipy import interpolate
 import copy
 from tqdm import tqdm
-import numba as nb
 from matplotlib import cm
 plt.rcParams["font.family"] = "Times New Roman"
 
@@ -314,7 +315,6 @@ class main(object):
         self.curve = np.array(self.curve)
         self.axs.plot(self.curve[:,0],self.curve[:,1],c="black",linestyle = (0, (1, 2)))
         plt.gca().set_aspect('equal')
-        plt.legend()
         plt.grid()
         plt.show()
 
@@ -328,10 +328,7 @@ class main(object):
         '''This is suprisingly important, dont get rid of just yet'''
         self.fig,self.axs = plt.subplots()
         for panel in self.offset_panels:
-            #print(panel)
             self.x = np.linspace(panel.points[0,0],panel.points[1,0],5)
-            #print("M, C")
-            #print(panel.m, panel.c)
             self.y = panel.m*self.x+panel.c
             self.axs.plot(self.x,self.y, c= "Green")
         plt.gca().set_aspect('equal')
