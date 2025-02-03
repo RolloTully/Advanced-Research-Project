@@ -6,6 +6,8 @@ from scipy import interpolate
 import copy
 from tqdm import tqdm
 from matplotlib import cm
+from skopt import gp_minimize
+from scipy.stats import qmc
 plt.rcParams["font.family"] = "Times New Roman"
 
 '''
@@ -13,11 +15,7 @@ Questions to be answered.
 
 What is the surface energy of the foil.
 
-What is the program, How does it work...
-
-
-
-
+What is the program, How does it work.
 '''
 class Trajectory(object):
     def __init__(self, surface, wire_trajectory, wire_velocity = []):
@@ -41,21 +39,21 @@ class Trajectory(object):
         '''assumes that all surface panels will recive the same energy'''
         [panel.update() for panel in self.surface_panels]
         [panel.update() for panel in self.wire_trajectory_panels]
-        self.mid_points = np.array([panel.mid_point for panel in self.surface_panels])
-        self.surface_irradance = np.zeros_like(self.surface_panels) #Keeps track of how much energy a panel has been exposed to.
+        self.mid_points = jnp.array([panel.mid_point for panel in self.surface_panels])
+        self.surface_irradance = jnp.zeros_like(self.surface_panels) #Keeps track of how much energy a panel has been exposed to.
         '''
         to accelerate this calculation we can calculate what regions of the trajectory are visable from each each panel, this means we dont have to compute all point for every panel
         this step is hugely computationally expensive.
         '''
-        self.wire_midpoints = np.array([panel.mid_point for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
-        self.wire_vectors = np.array([panel.panel_vector for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
-        self.surface_midpoints = np.array([panel.mid_point for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
-        self.surface_vectors = np.array([panel.panel_vector for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
-        self.surface_areas = np.array([panel.area for panel in self.surface_panels])  # Shape: (num_surfaces,)
-        self.wire_areas = np.array([panel.area for panel in self.wire_trajectory_panels])
+        self.wire_midpoints = jnp.array([panel.mid_point for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
+        self.wire_vectors = jnp.array([panel.panel_vector for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
+        self.surface_midpoints = jnp.array([panel.mid_point for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
+        self.surface_vectors = jnp.array([panel.panel_vector for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
+        self.surface_areas = jnp.array([panel.area for panel in self.surface_panels])  # Shape: (num_surfaces,)
+        self.wire_areas = jnp.array([panel.area for panel in self.wire_trajectory_panels])
         # Compute differences and distances between all wire and surface panels
         self.diff = self.wire_midpoints[:, np.newaxis, :] - self.surface_midpoints[np.newaxis, :, :]  # Shape: (num_wires, num_surfaces, 2)
-        self.distances = np.linalg.norm(self.diff, axis=2)  # Shape: (num_wires, num_surfaces)
+        self.distances = jnp.linalg.norm(self.diff, axis=2)  # Shape: (num_wires, num_surfaces)
         # Compute visibility matrix using broadcasting
         # Cross product in 2D: z-component of (a x b) = a[0]*b[1] - a[1]*b[0]
         self.cross_products = (
@@ -64,16 +62,14 @@ class Trajectory(object):
         )  # Shape: (num_wires, num_surfaces)
         self.visibility_matrix = (0 >= self.cross_products.T)  # Transpose for desired shape
         # Compute perspective matrix using broadcasting
-        self.dot_products = np.abs(
+        self.dot_products = jnp.abs(
         self.surface_vectors[np.newaxis, :, 0] * self.wire_vectors[:, 0][:, np.newaxis] +
         self.surface_vectors[np.newaxis, :, 1] * self.wire_vectors[:, 1][:, np.newaxis]
         )  # Shape: (num_wires, num_surfaces)
-        self.perspective_matrix = (self.dot_products.T * self.wire_areas * self.surface_areas * np.tri(*self.visibility_matrix.shape,k=1)) / (self.distances.T**2)  # Transpose for shape alignment
+        self.perspective_matrix = (self.dot_products.T * self.wire_areas * self.surface_areas * jnp.tri(*self.visibility_matrix.shape,k=1)) / (self.distances.T**2)  # Transpose for shape alignment
         # Calculate surface exposure
-        self.surface_exposure = np.sum(self.visibility_matrix * self.perspective_matrix, axis=1)#
+        self.surface_exposure = jnp.sum(self.visibility_matrix * self.perspective_matrix, axis=1)#
         if verbose:
-
-
             plt.imshow(self.visibility_matrix, interpolation='spline16', cmap = "binary")
             plt.colorbar()
             plt.grid()
@@ -91,8 +87,6 @@ class Trajectory(object):
             plt.xlabel("Wire panel index")
             plt.colorbar()
             plt.show()
-
-
             plt.plot(self.surface_exposure, c = 'black')
             plt.xlabel("Surface panel index")
             plt.ylabel("Dimensionless heating parameter")
@@ -105,11 +99,6 @@ class Trajectory(object):
             plt.xlabel("X position [mm]")
             plt.ylabel("Y position [mm]")
             plt.grid()
-            plt.show()
-            self.fig, self.ax = plt.subplots(subplot_kw=dict(projection='3d'))
-            print(self.surface_exposure)
-            self.ax.stem(self.surface_midpoints[:,0],self.surface_midpoints[:,1], self.surface_exposure)
-            self.ax.set_proj_type('persp')
             plt.show()
         return self.surface_exposure
 
@@ -176,7 +165,6 @@ class Shape(object):
         self.Compute_goemetry()
         self.Fit_bspline_surface()
     def Discretize(self, points):
-        #print(points.shape)
         return np.array([Panel(points[0,n], points[0,n+1]) for n in range(0,points.shape[1]-1)]) #Turns the continuious surface into a set of discrete panels, points are distributed evenly along the parametrisation
 
     def Compute_goemetry(self):
@@ -230,6 +218,14 @@ class main(object):
         self.foil_addr = "Airfoils//s1223.dat"
         self.raw = open(self.foil_addr,'r').read()
         self.foil_dat = np.array(self.format_dat(self.raw))[2:-2]
+        self.Optimisation_Iteration_Limit = 100
+        self.Particles = 20
+
+        '''Optimisation Parameters'''
+        self.C1 = self.C2  = 0.1
+        self.w = 0.8
+
+
         self.mainloop()
 
     def Discretize(self, points):
@@ -258,7 +254,6 @@ class main(object):
         self.formatted = list(filter(lambda x:x!=[],self.formatted))
         return self.formatted
 
-
     def panel_intersections(self, panels):
         self.points = []
         for n in range(0, panels.shape[0]-1):
@@ -275,8 +270,19 @@ class main(object):
         self.points.append([self.x_intersection,self.y_intersection])
         return panels
 
-    def Auto_Differentiation(self):
-        pass
+
+    def Objective_function(self, offsets):
+        '''Exists just to simplify and discretize away this step in a nice way.'''
+        self.Local_Panels = self.Panels.copy()
+        self.offset_panels = np.array([panel.offset(offsets[n]) for n, panel in enumerate(self.self.Local_Panels)])#offsets the panel
+        '''We now calculate the new intersections between the panels'''
+        self.trajectory_Panels = self.panel_intersections(self.offset_panels) #calculates the new meeting points between panels and redefines the panels, this is the trajectory path
+        '''^^^^^^^^^^^''''
+        '''Need to change this to be panel node offsets'''
+        self.trajectory = Trajectory(self.Panels, self.trajectory_Panels)
+        self.surface_exposure = self.trajectory.predict_sde()
+        self.Loss = self.MSE_Loss(self.surface_exposure, self.trajectory.critical_surface_energy)
+        return self.Loss
 
     def mainloop(self):
         '''Load in Foil Data'''
@@ -318,12 +324,34 @@ class main(object):
         plt.grid()
         plt.show()
 
-        '''We now have the hotwires inital trajectory, we now need to calculate how well this trajectory performes'''
-        self.surface_exposure = self.trajectory.predict_sde()
-        self.Loss = self.MSE_Loss(self.surface_exposure, self.trajectory.critical_surface_energy)
+        '''OPTIMIZATION STEP'''
+        '''Doing Autodiff is going to be basicly impossible here'''
+        '''so we are going to go gradientles'''
+        '''Look whos that, is that Nelder-mead, is that Baysian Optimisation! NO, its Particle Swarm !!!'''
+        '''Draw N Samples'''
+        self.LHS = qmc.LatinHercube(d=100) #define latinhypercube sampler for an arrray of 100D design varaible, LHS is used becuase it will give a better understanding of the design space
+        self.Particle_Positions = self.LHS.random(n = self.Particles)*10  #draw N samples of the design space, the LHS samples are scaled to in the range +5mm, the design variable defined the off set of each node in the wire trajectory directorie
+        self.Particle_Velocity = (self.LHS.random(n = self.Particles)-0.5) #draw N samples of the design space for the velocity this is scaled and given a negative component to promote search in both directions
+        self.Particle_best_performance = [self.Objective_function(particle) for particle in self.Particle_Positions]
+        '''We can now start the Optimisation'''
+        for _ in range(self.Optimisation_Iteration_Limit):
+            '''We evalute the objective function at each particles position'''
+            self.Particle_performance = [self.Objective_function(particle) for particle in self.Particle_Positions]#Calculate the performance of each particle, this can be done as a parellized process, Much speed, go fast.
+            self.improved = self.Particle_performance < self.Particle_best_performance
+            self.Particle_best_positions[self.improved] = self.Particle_Positions[self.improved]
+            self.Particle_best_performance[self.improved] = self.Particle_performance[self.improved]
+            self.best_index = np.arg_min(self.Particle_performance)
+            if self.Particle_performance[self.best_index] < self.Global_best:
+                self.Global_best_performance = self.Particle_performance[self.best_index]#Global Best Solution
+                self.Global_best_position = self.Particle_Positions[self.best_index]
+            '''We now update the particle velocity'''
+            self.Particle_Velocity = self.W*self.Particle_Velocity +
+                                     self.C1*np.random.rand()*(self.Particle_best_performance - self.Particle_Positions) +
+                                     self.C2*np.random.rand()*(self.Global_best_performance - self.Particle_Positions)
+            self.Particle_Positions +=  self.Particle_Velocity
 
-        print("MSE Loss", self.Loss)
-        '''We now need to do auto differentiation, fml'''
+        '''TAAAAA DAAAA'''
+        '''Like magic'''
 
         '''This is suprisingly important, dont get rid of just yet'''
         self.fig,self.axs = plt.subplots()
