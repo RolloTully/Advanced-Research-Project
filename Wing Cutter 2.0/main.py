@@ -26,31 +26,31 @@ class Trajectory(object):
         self.free_surface_critical_energy = 1
         self.close_surface_critical_energy = 1
 
-    def dkr(self,sfm):
-        pass
-    def predict_dkr(self):
-        '''Predicts based on a direct relation between cutter speed and kerf width'''
-        '''returns the predicted surface shape from the given trajectory'''
-        pass
-
     def predict_sde(self, verbose = False):
         '''predict based on the energy deposited over the foil surface'''
         '''returns the surface energy on the given foil surface'''
         '''assumes that all surface panels will recive the same energy'''
-        [panel.update() for panel in self.surface_panels]
-        [panel.update() for panel in self.wire_trajectory_panels]
-        self.mid_points = jnp.array([panel.mid_point for panel in self.surface_panels])
+
+        self.surface_midpoints = jnp.array([(self.surface_panels[n+1] + self.surface_panels[n])/2 for n, _ in enumerate(self.surface_panels)])
+        self.surface_vectors = np.diff(self.surface_panels,axis=0)[0]
+        self.surface_areas = [np.hypot(x,y) for x,y in  self.surface_vectors]
+
+        self.wire_midpoints = jnp.array([(self.wire_trajectory_panels[n+1] + self.wire_trajectory_panels[n])/2 for n, _ in enumerate(self.wire_trajectory_panels)])
+        self.wire_vectors = np.diff(self.wire_trajectory_panels,axis=0)[0]
+        self.wire_areas = [np.hypot(x,y) for x,y in  self.wire_vectors]
+
+
         self.surface_irradance = jnp.zeros_like(self.surface_panels) #Keeps track of how much energy a panel has been exposed to.
         '''
         to accelerate this calculation we can calculate what regions of the trajectory are visable from each each panel, this means we dont have to compute all point for every panel
         this step is hugely computationally expensive.
         '''
-        self.wire_midpoints = jnp.array([panel.mid_point for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
-        self.wire_vectors = jnp.array([panel.panel_vector for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
-        self.surface_midpoints = jnp.array([panel.mid_point for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
-        self.surface_vectors = jnp.array([panel.panel_vector for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
-        self.surface_areas = jnp.array([panel.area for panel in self.surface_panels])  # Shape: (num_surfaces,)
-        self.wire_areas = jnp.array([panel.area for panel in self.wire_trajectory_panels])
+        #self.wire_midpoints = jnp.array([panel.mid_point for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
+        #self.wire_vectors = jnp.array([panel.panel_vector for panel in self.wire_trajectory_panels])  # Shape: (num_wires, 2)
+        #self.surface_midpoints = jnp.array([panel.mid_point for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
+        #self.surface_vectors = jnp.array([panel.panel_vector for panel in self.surface_panels])  # Shape: (num_surfaces, 2)
+        #self.surface_areas = jnp.array([panel.area for panel in self.surface_panels])  # Shape: (num_surfaces,)
+        #self.wire_areas = jnp.array([panel.area for panel in self.wire_trajectory_panels])
         # Compute differences and distances between all wire and surface panels
         self.diff = self.wire_midpoints[:, np.newaxis, :] - self.surface_midpoints[np.newaxis, :, :]  # Shape: (num_wires, num_surfaces, 2)
         self.distances = jnp.linalg.norm(self.diff, axis=2)  # Shape: (num_wires, num_surfaces)
@@ -102,51 +102,14 @@ class Trajectory(object):
             plt.show()
         return self.surface_exposure
 
-
-
 class Panel(object):
     def __init__(self, p1,p2):
         self.points = np.vstack((p1,p2))
         self.panel_vector = np.diff(self.points,axis=0)[0]
-        self.panel_normal_vector = self.perpendicular(self.panel_vector).astype(np.float32)
         self.area = np.hypot(self.panel_vector[0],self.panel_vector[1])
         self.mid_point = np.mean(self.points,axis=0)
         self.direction = np.sign(np.diff(self.points[:,0],axis = 0)[0]) #Is the direction of travel of curve
-        self.line()
 
-    def perpendicular(self, a) :
-        self.b = np.empty_like(a)
-        self.b[0] = -a[1]
-        self.b[1] = a[0]
-        return self.b
-    def line(self):
-        self.m = np.diff(self.points[:,1])/np.diff(self.points[:,0])
-        self.c =  self.points[0,1]-self.points[0,0]*self.m
-
-    def offset(self,d):
-        '''returns a copy that has been offset by d mm'''
-        '''
-        This has some problems with certain foil geometries, needs to be refactored.
-        '''
-        self.offset_self = copy.deepcopy(self)
-        self.offset_self.c = self.c-self.direction*d*np.sqrt(1+self.m**2)
-        return self.offset_self
-
-    def does_intersect(self ,m ,c):
-        '''Does a line intersect with the panel and how far from the source to the panel and the angle of intersection'''
-        '''returns boolean intersection check'''
-        #finds the point of intersection
-        self.x_intersection = (c-self.c)/(self.m-m)
-        self.y_intersection = self.x_intersection*self.m+self.c
-        #parameterises the intersection point
-        #print(np.array([self.x_intersection, self.y_intersection]).T,self.points[1],self.panel_vector)
-        self.parameteriation = (np.array([self.x_intersection, self.y_intersection]).T-self.points[1])/self.panel_vector
-        #print(self.parameteriation)
-        if np.all(0 <= self.parameteriation) and np.all(self.parameteriation <=1):
-            #the intersection lies within the bounds of panel
-            return True
-        else:
-            return False
     def update(self):
         self.mid_point = np.mean(self.points,axis=0)
         self.direction = np.sign(np.diff(self.points[:,0],axis = 0)[0]) #Is the direction of travel of curve
@@ -232,12 +195,7 @@ class main(object):
         '''to correctly discretise we have to close the path'''
         points = np.concatenate([points[0],[points[0,0]]],axis=0)#this closes the loop
         #print(points.shape)
-        return np.array([Panel(points[n], points[n+1]) for n in range(0,points.shape[0]-1)]) #Turns the continuious surface into a set of discrete panels, points are distributed evenly along the parametrisation
-
-    def _curve(self, panels, offset_vector):
-        self.offset_points = []
-        for  n in range(0, points.shape[0]-1):
-            '''We need to calculate the surface vector at the point, this is the rotational average of the 2 neighboring panels'''
+        return np.array([[points[n], points[n+1]] for n in range(0,points.shape[0]-1)]) #Turns the continuious surface into a set of discrete panels, points are distributed evenly along the parametrisation
 
     def MSE_Loss(self, array, target):
         '''Define loss function'''
@@ -270,11 +228,15 @@ class main(object):
         self.points.append([self.x_intersection,self.y_intersection])
         return panels
 
+    def Offset(self, nodes, offsets):
+        for n, node in enumerate(nodes):
+            
 
     def Objective_function(self, offsets):
         '''Exists just to simplify and discretize away this step in a nice way.'''
         self.Local_Panels = self.Panels.copy()
-        self.offset_panels = np.array([panel.offset(offsets[n]) for n, panel in enumerate(self.self.Local_Panels)])#offsets the panel
+        '''Extract nodes from'''
+        self.offset_panels = np.array([panel.offset(offsets[n]) for n, panel in enumerate(self.Local_Panels)])#offsets the panel
         '''We now calculate the new intersections between the panels'''
         self.trajectory_Panels = self.panel_intersections(self.offset_panels) #calculates the new meeting points between panels and redefines the panels, this is the trajectory path
         '''^^^^^^^^^^^''''
@@ -287,30 +249,21 @@ class main(object):
     def mainloop(self):
         '''Load in Foil Data'''
         self.shape = Shape(self.foil_dat, self.foil_dat, 300,200,2,0,5) #Instanciated the foil
-
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot(111)
         self.ax.plot(self.foil_dat[:,0],self.foil_dat[:,1])
         plt.title("S1223 Foil")
         plt.gca().set_aspect('equal')
         plt.show()
-
         '''Tip Geometry is extracted from the composite B-Spline'''
         self.x, self.y = self.shape.Tip_geometry()
         self.Tip_points = np.dstack((self.x,self.y))
 
-        '''These points are turned in to panels'''
-        self.Panels = self.Discretize(self.Tip_points)
-
         '''The cutting path now needs to be initialised, this is done by offsetting the the surface points and then defining a new B-Spline'''
-        self.x = np.linspace(0,np.pi,len(self.Panels))
         self.offset_guess = 3
-        plt.plot(self.offset_guess)
-        plt.show()
-        self.offset_panels = np.array([panel.offset(self.offset_guess) for n, panel in enumerate(self.Panels)])#offsets the panel
+        self.offset_points = self.offset(self.Tip_points, np.full_like(self.Tip_points,self.offset_guess))
         '''We now calculate the new intersections between the panels'''
-        self.trajectory_Panels = self.panel_intersections(self.offset_panels) #calculates the new meeting points between panels and redefines the panels, this is the trajectory path
-        self.trajectory = Trajectory(self.Panels, self.trajectory_Panels)
+        self.trajectory = Trajectory(self.Tip_points, self.offset_points)
 
         self.fig,self.axs = plt.subplots()
         self.curve = []
@@ -352,15 +305,6 @@ class main(object):
 
         '''TAAAAA DAAAA'''
         '''Like magic'''
-
-        '''This is suprisingly important, dont get rid of just yet'''
-        self.fig,self.axs = plt.subplots()
-        for panel in self.offset_panels:
-            self.x = np.linspace(panel.points[0,0],panel.points[1,0],5)
-            self.y = panel.m*self.x+panel.c
-            self.axs.plot(self.x,self.y, c= "Green")
-        plt.gca().set_aspect('equal')
-        plt.show()
 
 
 
