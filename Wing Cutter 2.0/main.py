@@ -19,10 +19,10 @@ What is the program, How does it work.
 '''
 class Trajectory(object):
     def __init__(self, surface, wire_trajectory, wire_velocity = []):
-        self.surface_panels = surface
-        self.wire_trajectory_panels = wire_trajectory
+        self.surface_nodes = surface
+        self.wire_trajectory_nodes = wire_trajectory
         self.wire_velocity = wire_velocity
-        self.critical_surface_energy = 1 #<<<<<<-----------This needs to be calibrated from experiemental analysis.
+        self.critical_surface_energy = 30 #<<<<<<-----------This needs to be calibrated from experiemental analysis.
         self.free_surface_critical_energy = 1
         self.close_surface_critical_energy = 1
 
@@ -31,16 +31,18 @@ class Trajectory(object):
         '''returns the surface energy on the given foil surface'''
         '''assumes that all surface panels will recive the same energy'''
 
-        self.surface_midpoints = jnp.array([(self.surface_panels[n+1] + self.surface_panels[n])/2 for n, _ in enumerate(self.surface_panels)])
-        self.surface_vectors = np.diff(self.surface_panels,axis=0)[0]
+        self.surface_midpoints = np.array([(self.surface_nodes[n+1] + self.surface_nodes[n])/2 for n in range(self.surface_nodes.shape[0]-1)])
+        self.surface_vectors = np.diff(self.surface_nodes,axis=0)
         self.surface_areas = [np.hypot(x,y) for x,y in  self.surface_vectors]
 
-        self.wire_midpoints = jnp.array([(self.wire_trajectory_panels[n+1] + self.wire_trajectory_panels[n])/2 for n, _ in enumerate(self.wire_trajectory_panels)])
-        self.wire_vectors = np.diff(self.wire_trajectory_panels,axis=0)[0]
+        #print(self.wire_trajectory_nodes.shape)
+        self.wire_midpoints = np.array([(self.wire_trajectory_nodes[n+1] + self.wire_trajectory_nodes[n])/2 for n in range(self.wire_trajectory_nodes.shape[0]-1)])
+        #print(self.wire_trajectory_nodes)
+        self.wire_vectors = np.diff(self.wire_trajectory_nodes,axis=0)
         self.wire_areas = [np.hypot(x,y) for x,y in  self.wire_vectors]
 
 
-        self.surface_irradance = jnp.zeros_like(self.surface_panels) #Keeps track of how much energy a panel has been exposed to.
+        self.surface_irradance = np.zeros_like(self.surface_nodes) #Keeps track of how much energy a panel has been exposed to.
         '''
         to accelerate this calculation we can calculate what regions of the trajectory are visable from each each panel, this means we dont have to compute all point for every panel
         this step is hugely computationally expensive.
@@ -53,7 +55,7 @@ class Trajectory(object):
         #self.wire_areas = jnp.array([panel.area for panel in self.wire_trajectory_panels])
         # Compute differences and distances between all wire and surface panels
         self.diff = self.wire_midpoints[:, np.newaxis, :] - self.surface_midpoints[np.newaxis, :, :]  # Shape: (num_wires, num_surfaces, 2)
-        self.distances = jnp.linalg.norm(self.diff, axis=2)  # Shape: (num_wires, num_surfaces)
+        self.distances = np.linalg.norm(self.diff, axis=2)  # Shape: (num_wires, num_surfaces)
         # Compute visibility matrix using broadcasting
         # Cross product in 2D: z-component of (a x b) = a[0]*b[1] - a[1]*b[0]
         self.cross_products = (
@@ -62,13 +64,13 @@ class Trajectory(object):
         )  # Shape: (num_wires, num_surfaces)
         self.visibility_matrix = (0 >= self.cross_products.T)  # Transpose for desired shape
         # Compute perspective matrix using broadcasting
-        self.dot_products = jnp.abs(
+        self.dot_products = np.abs(
         self.surface_vectors[np.newaxis, :, 0] * self.wire_vectors[:, 0][:, np.newaxis] +
         self.surface_vectors[np.newaxis, :, 1] * self.wire_vectors[:, 1][:, np.newaxis]
         )  # Shape: (num_wires, num_surfaces)
-        self.perspective_matrix = (self.dot_products.T * self.wire_areas * self.surface_areas * jnp.tri(*self.visibility_matrix.shape,k=1)) / (self.distances.T**2)  # Transpose for shape alignment
+        self.perspective_matrix = (self.dot_products.T * self.wire_areas * self.surface_areas * np.tri(*self.visibility_matrix.shape,k=1)) / (self.distances.T**2)  # Transpose for shape alignment
         # Calculate surface exposure
-        self.surface_exposure = jnp.sum(self.visibility_matrix * self.perspective_matrix, axis=1)#
+        self.surface_exposure = np.sum(self.visibility_matrix * self.perspective_matrix, axis=1)#
         if verbose:
             plt.imshow(self.visibility_matrix, interpolation='spline16', cmap = "binary")
             plt.colorbar()
@@ -152,6 +154,9 @@ class Shape(object):
         '''Fits parametric b-splines to the discrete directries'''
         '''these b-splines are parametrised in x and y seperatly with paramter t'''
         '''A second function defines the rate at which the curve is traversed.'''
+
+        #self.r_BSpline = interpolate.make_splprep([self.root_discrete_directrices[:,0],self.root_discrete_directrices[:,1]], k=5, s=0.1 )
+        #self.t_BSpline = interpolate.make_splprep([self.tip_discrete_directrices[:,0],self.tip_discrete_directrices[:,1]], k=5, s=0.1)
         self.r_tck, _ = interpolate.splprep([self.root_discrete_directrices[:,0],self.root_discrete_directrices[:,1]],k=5,s=0.1,per=True) #Continuious directrie for root rail
         self.t_tck, _ = interpolate.splprep([self.tip_discrete_directrices[:,0],self.tip_discrete_directrices[:,1]],k=5,s=0.1,per=True) #Continuious directrie for tip rail
         '''
@@ -159,33 +164,26 @@ class Shape(object):
         when ready we use this to sample the curve at desired points.
         this returns the spline parameteried in u.
         '''
-
-    def Tip_knots(self):
-        #print(self.t_tck[0])
-        return interpolate.splev(self.t_tck[0],self.t_tck)
-
     def Tip_geometry(self):
-        self.Samples = np.linspace(0,1,1000, endpoint = False)
+        self.Samples = np.linspace(0,1,200, endpoint = False)
         return interpolate.splev(self.Samples,self.t_tck)
 
     def Root_geometry(self):
-        self.Samples = np.linspace(0,1,1000, endpoint = False)
+        self.Samples = np.linspace(0,1,200, endpoint = False)
         return interpolate.splev(self.Samples,self.r_tck)
 
-    def constituants(self):
-        '''breaks the foil surface in to discrete panel elements'''
-        pass
 class main(object):
     def __init__(self):
         '''Loading in foil data'''
         self.foil_addr = "Airfoils//s1223.dat"
         self.raw = open(self.foil_addr,'r').read()
         self.foil_dat = np.array(self.format_dat(self.raw))[2:-2]
-        self.Optimisation_Iteration_Limit = 100
-        self.Particles = 20
+        self.Optimisation_Iteration_Limit = 500
+        self.Particles = 50
 
         '''Optimisation Parameters'''
-        self.C1 = self.C2  = 0.1
+        self.C1 = 0.9
+        self.C2  = 0.1
         self.w = 0.8
 
 
@@ -212,99 +210,125 @@ class main(object):
         self.formatted = list(filter(lambda x:x!=[],self.formatted))
         return self.formatted
 
-    def panel_intersections(self, panels):
-        self.points = []
-        for n in range(0, panels.shape[0]-1):
-            self.x_intersection = (panels[n+1].c-panels[n].c)/(panels[n].m-panels[n+1].m)
-            self.y_intersection = panels[n].m*self.x_intersection+panels[n].c
-            panels[n+1].points[0] = np.r_[*[self.x_intersection,self.y_intersection]]
-            panels[n].points[1] = np.r_[*[self.x_intersection,self.y_intersection]]
-            self.points.append([self.x_intersection,self.y_intersection])
-        #We now deal with the edge case of first and last elements
-        self.x_intersection = (panels[0].c-panels[-1].c)/(panels[-1].m-panels[0].m)
-        self.y_intersection = panels[-1].m*self.x_intersection+panels[-1].c
-        panels[0].points[0] = np.r_[*[self.x_intersection,self.y_intersection]]
-        panels[-1].points[1] = np.r_[*[self.x_intersection,self.y_intersection]]
-        self.points.append([self.x_intersection,self.y_intersection])
-        return panels
-
     def Offset(self, nodes, offsets):
-        for n, node in enumerate(nodes):
-            
+        #print("_______OFFSET____________")
+        #print(nodes.shape)
+        #print(offsets.shape)
+        '''Fast as fuck bois, like 10 microseconds for 100 points '''
+        self.nodes = np.concatenate([nodes[-1:],nodes,nodes[:1]],axis=0)#Formats array, copies for and last elements to the last and first positions
+        self.derivatives = self.nodes[1:]-self.nodes[:-1]# The difference between neighbouring nodes
+        self.Unit_derivaitves = self.derivatives/np.sqrt(np.sum(self.derivatives**2,axis=1))[:,None]#calculates the plane unit vector
+        self.Offset_unit_vectors = self.Unit_derivaitves[:,::-1]#flips cooordinate
+        self.Offset_unit_vectors[:,0] *= -1#multiplies 1st element by minus 1
+        self.Offset_unit_vectors = (self.Offset_unit_vectors[1:]+self.Offset_unit_vectors[:-1])/2 #calculated the average of neighbouring unit vectors
+        self.Offset_vectors = self.Offset_unit_vectors*offsets[:,None]*-1#scales offset vector
+        return nodes+self.Offset_vectors#adds offset vector to nodes and returns
 
-    def Objective_function(self, offsets):
+    def Objective_function(self, BSpline):
         '''Exists just to simplify and discretize away this step in a nice way.'''
-        self.Local_Panels = self.Panels.copy()
-        '''Extract nodes from'''
-        self.offset_panels = np.array([panel.offset(offsets[n]) for n, panel in enumerate(self.Local_Panels)])#offsets the panel
-        '''We now calculate the new intersections between the panels'''
-        self.trajectory_Panels = self.panel_intersections(self.offset_panels) #calculates the new meeting points between panels and redefines the panels, this is the trajectory path
-        '''^^^^^^^^^^^''''
-        '''Need to change this to be panel node offsets'''
-        self.trajectory = Trajectory(self.Panels, self.trajectory_Panels)
+        ## TODO:  convert tck back in to a BSpline definition
+        self.trajectory_nodes = interpolate.splev(np.linspace(0,1,200, endpoint = False),BSpline)
+        self.trajectory_nodes = np.dstack((self.trajectory_nodes[0],self.trajectory_nodes[1]))[0]
+        self.trajectory = Trajectory(self.Tip_points, self.trajectory_nodes)
         self.surface_exposure = self.trajectory.predict_sde()
-        self.Loss = self.MSE_Loss(self.surface_exposure, self.trajectory.critical_surface_energy)
+        #This eororages the optimiser to reduce the surfrace exposure error
+        self.Exposure_loss = self.MSE_Loss(self.surface_exposure, self.trajectory.critical_surface_energy)
+        #this results in solutions that do not fully align with our desigred path
+        #input()
+        #print(self.Exposure_loss, self.Path_Loss)
+        self.Loss = self.Exposure_loss
         return self.Loss
 
     def mainloop(self):
         '''Load in Foil Data'''
         self.shape = Shape(self.foil_dat, self.foil_dat, 300,200,2,0,5) #Instanciated the foil
-        self.fig = plt.figure()
-        self.ax = self.fig.add_subplot(111)
-        self.ax.plot(self.foil_dat[:,0],self.foil_dat[:,1])
-        plt.title("S1223 Foil")
-        plt.gca().set_aspect('equal')
-        plt.show()
+
         '''Tip Geometry is extracted from the composite B-Spline'''
-        self.x, self.y = self.shape.Tip_geometry()
-        self.Tip_points = np.dstack((self.x,self.y))
-
+        self.x, self.y = self.shape.Tip_geometry()#Extract the b-spline geometry as a set of points
+        self.Tip_points = np.dstack((self.x,self.y))[0]#Stack the 2 arrays [N,] into an [N,2] array
+        print(self.Tip_points)
         '''The cutting path now needs to be initialised, this is done by offsetting the the surface points and then defining a new B-Spline'''
-        self.offset_guess = 3
-        self.offset_points = self.offset(self.Tip_points, np.full_like(self.Tip_points,self.offset_guess))
-        '''We now calculate the new intersections between the panels'''
-        self.trajectory = Trajectory(self.Tip_points, self.offset_points)
-
-        self.fig,self.axs = plt.subplots()
-        self.curve = []
-        for panel in self.Panels:
-            self.axs.plot(panel.points[:,0],panel.points[:,1],c="black",linestyle = (0, (3, 1, 1, 1)))
-        for panel in self.trajectory_Panels:
-            self.curve.append([panel.points[1,0],panel.points[1,1]])
-        self.curve = np.array(self.curve)
-        self.axs.plot(self.curve[:,0],self.curve[:,1],c="black",linestyle = (0, (1, 2)))
-        plt.gca().set_aspect('equal')
-        plt.grid()
+        self.offset_guess = 1#[mm]Just an inital guess
+        self.offset_points = self.Offset(self.Tip_points, np.full_like(self.Tip_points[:,0],self.offset_guess)) #Initialising trajectory for the inital simulation
+        plt.plot(self.Tip_points[:,0],self.Tip_points[:,1])
+        plt.plot(self.offset_points[:,0],self.offset_points[:,1])
         plt.show()
+
+
+        self.tck = interpolate.splprep([self.offset_points[:,0],self.offset_points[:,1]],k=5,s=0.1,per=True)[0]
+        self.t, self.c, self.k  = self.tck
+        print("_______________________________")
+        print(self.tck)
+        print(self.t)
+        print(self.c)
+        print(self.k)
+        self.v = np.dstack((self.c[0],self.c[1]))[0]
+        print([self.t,[self.v[:,0],self.v[:,1]],self.k])
+        input()
+        #self.trajectory = Trajectory(self.Tip_points, self.t, self.c, self.k) #Instanciate this Trajectory calls
 
         '''OPTIMIZATION STEP'''
         '''Doing Autodiff is going to be basicly impossible here'''
         '''so we are going to go gradientles'''
         '''Look whos that, is that Nelder-mead, is that Baysian Optimisation! NO, its Particle Swarm !!!'''
         '''Draw N Samples'''
-        self.LHS = qmc.LatinHercube(d=100) #define latinhypercube sampler for an arrray of 100D design varaible, LHS is used becuase it will give a better understanding of the design space
-        self.Particle_Positions = self.LHS.random(n = self.Particles)*10  #draw N samples of the design space, the LHS samples are scaled to in the range +5mm, the design variable defined the off set of each node in the wire trajectory directorie
-        self.Particle_Velocity = (self.LHS.random(n = self.Particles)-0.5) #draw N samples of the design space for the velocity this is scaled and given a negative component to promote search in both directions
-        self.Particle_best_performance = [self.Objective_function(particle) for particle in self.Particle_Positions]
+        print("Design Parameter space size")
+        #self.LHS = qmc.LatinHypercube(d=self.Tip_points.shape[0]) #define latinhypercube sampler for an arrray of 100D design varaible, LHS is used becuase it will give a better understanding of the design space
+        self.Particle_Positions = np.array([self.v + np.random.randn(*self.v.shape)*2 for _ in range(self.Particles)]) #(self.LHS.random(n = self.Particles)*0.1)+3  #draw N samples of the design space, the LHS samples are scaled to in the range +5mm, the design variable defined the off set of each node in the wire trajectory directorie
+        self.Particle_Velocity =  np.array([np.random.randn(*self.v.shape)*0.05 for _ in range(self.Particles)])#draw N samples of the design space for the velocity this is scaled and given a negative component to promote search in both directions
+        #print(self.Particle_Positions)
+        print(self.Particle_Velocity)
+        self.Particle_best_positions = np.copy(self.Particle_Positions)
+        self.Particle_performance = np.array([self.Objective_function([self.t,[particle[:,0],particle[:,1]],self.k]) for particle in self.Particle_Positions])
+        self.Particle_best_performance = np.copy(self.Particle_performance)
+
+
+
+
+        self.Global_best = np.argmin(self.Particle_performance)
+        self.Global_best_position = np.copy(self.Particle_Positions[self.Global_best])
+        self.Global_best_performance = self.Particle_performance[self.Global_best]
+
         '''We can now start the Optimisation'''
+        self.Particle_Positions += self.Particle_Velocity
+        self.fig=plt.figure()
+        plt.axes().set_aspect('equal')
+        plt.plot(self.Tip_points[:,0],self.Tip_points[:,1])
+
         for _ in range(self.Optimisation_Iteration_Limit):
+
+            self.Particle_Positions +=  self.Particle_Velocity
+            print("Iteratiom: ", _, "Global best performance: ",self.Global_best_performance)
+            self.best_trajectory = self.Offset(self.Tip_points, self.Global_best_position)
+
+            self.nodes = interpolate.splev(np.linspace(0,1,1000, endpoint = False),[self.t,[self.Global_best_position[:,0],self.Global_best_position[:,1]],self.k])
+
+            #plt.plot(self.nodes[0],self.nodes[1])
+
+            plt.pause(0.001)
             '''We evalute the objective function at each particles position'''
-            self.Particle_performance = [self.Objective_function(particle) for particle in self.Particle_Positions]#Calculate the performance of each particle, this can be done as a parellized process, Much speed, go fast.
+            self.Particle_performance = np.array([self.Objective_function([self.t,[particle[:,0],particle[:,1]],self.k]) for particle in self.Particle_Positions])#Calculate the performance of each particle, this can be done as a parellized process, Much speed, go fast.
             self.improved = self.Particle_performance < self.Particle_best_performance
             self.Particle_best_positions[self.improved] = self.Particle_Positions[self.improved]
             self.Particle_best_performance[self.improved] = self.Particle_performance[self.improved]
-            self.best_index = np.arg_min(self.Particle_performance)
-            if self.Particle_performance[self.best_index] < self.Global_best:
+            self.best_index = np.argmin(self.Particle_performance)
+            if self.Particle_performance[self.best_index] < self.Global_best_performance:
                 self.Global_best_performance = self.Particle_performance[self.best_index]#Global Best Solution
                 self.Global_best_position = self.Particle_Positions[self.best_index]
             '''We now update the particle velocity'''
-            self.Particle_Velocity = self.W*self.Particle_Velocity +
-                                     self.C1*np.random.rand()*(self.Particle_best_performance - self.Particle_Positions) +
-                                     self.C2*np.random.rand()*(self.Global_best_performance - self.Particle_Positions)
-            self.Particle_Positions +=  self.Particle_Velocity
+            self.Particle_Velocity = self.w*self.Particle_Velocity + self.C1*np.random.rand()*(self.Particle_best_positions - self.Particle_Positions) + self.C2*np.random.rand()*(self.Global_best_position - self.Particle_Positions)
+        self.fig=plt.figure()
+        plt.axes().set_aspect('equal')
+        plt.plot(self.Tip_points[:,0],self.Tip_points[:,1])
+        self.nodes = interpolate.splev(np.linspace(0,1,1000, endpoint = False),[self.t,[self.Global_best_position[:,0],self.Global_best_position[:,1]],self.k])
+        plt.plot(self.nodes[0],self.nodes[1])
+        plt.show()
 
         '''TAAAAA DAAAA'''
         '''Like magic'''
+        '''I swear this should have been harder'''
+
+
 
 
 
